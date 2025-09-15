@@ -1,0 +1,723 @@
+import json
+import time
+import threading
+import logging
+from datetime import datetime, timedelta
+from typing import Dict, List, Any, Optional, Callable
+from dataclasses import dataclass, asdict
+from enum import Enum
+import uuid
+import sqlite3
+from abc import ABC, abstractmethod
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+class DeviceType(Enum):
+    SENSOR = "sensor"
+    ACTUATOR = "actuator"
+    SMART_DEVICE = "smart_device"
+
+class DeviceStatus(Enum):
+    ONLINE = "online"
+    OFFLINE = "offline"
+    ERROR = "error"
+
+class RuleCondition(Enum):
+    EQUALS = "equals"
+    GREATER_THAN = "greater_than"
+    LESS_THAN = "less_than"
+    BETWEEN = "between"
+    CHANGED = "changed"
+
+@dataclass
+class DeviceData:
+    device_id: str
+    timestamp: datetime
+    data: Dict[str, Any]
+
+@dataclass
+class AutomationRule:
+    rule_id: str
+    name: str
+    condition_device_id: str
+    condition_property: str
+    condition_type: RuleCondition
+    condition_value: Any
+    action_device_id: str
+    action_method: str
+    action_params: Dict[str, Any]
+    enabled: bool = True
+    created_at: datetime = None
+
+    def __post_init__(self):
+        if self.created_at is None:
+            self.created_at = datetime.now()
+
+class IoTDevice(ABC):
+    """Abstract base class for IoT devices"""
+    
+    def __init__(self, device_id: str, name: str, device_type: DeviceType):
+        self.device_id = device_id
+        self.name = name
+        self.device_type = device_type
+        self.status = DeviceStatus.OFFLINE
+        self.properties = {}
+        self.last_update = None
+        self.callbacks = []
+
+    @abstractmethod
+    def read_data(self) -> Dict[str, Any]:
+        """Read data from the device"""
+        pass
+
+    @abstractmethod
+    def write_data(self, data: Dict[str, Any]) -> bool:
+        """Write data to the device"""
+        pass
+
+    def connect(self) -> bool:
+        """Connect to the device"""
+        self.status = DeviceStatus.ONLINE
+        logger.info(f"Device {self.name} ({self.device_id}) connected")
+        return True
+
+    def disconnect(self):
+        """Disconnect from the device"""
+        self.status = DeviceStatus.OFFLINE
+        logger.info(f"Device {self.name} ({self.device_id}) disconnected")
+
+    def update_properties(self, properties: Dict[str, Any]):
+        """Update device properties"""
+        old_properties = self.properties.copy()
+        self.properties.update(properties)
+        self.last_update = datetime.now()
+        
+        # Trigger callbacks for property changes
+        for callback in self.callbacks:
+            callback(self.device_id, old_properties, self.properties)
+
+    def add_callback(self, callback: Callable):
+        """Add a callback for property changes"""
+        self.callbacks.append(callback)
+
+    def get_info(self) -> Dict[str, Any]:
+        """Get device information"""
+        return {
+            'device_id': self.device_id,
+            'name': self.name,
+            'type': self.device_type.value,
+            'status': self.status.value,
+            'properties': self.properties,
+            'last_update': self.last_update.isoformat() if self.last_update else None
+        }
+
+class TemperatureSensor(IoTDevice):
+    """Temperature sensor implementation"""
+    
+    def __init__(self, device_id: str, name: str):
+        super().__init__(device_id, name, DeviceType.SENSOR)
+        self.temperature = 20.0
+        self.humidity = 50.0
+
+    def read_data(self) -> Dict[str, Any]:
+        # Simulate sensor reading with some variation
+        import random
+        self.temperature += random.uniform(-0.5, 0.5)
+        self.humidity += random.uniform(-2, 2)
+        self.humidity = max(0, min(100, self.humidity))
+        
+        data = {
+            'temperature': round(self.temperature, 2),
+            'humidity': round(self.humidity, 2)
+        }
+        self.update_properties(data)
+        return data
+
+    def write_data(self, data: Dict[str, Any]) -> bool:
+        # Sensors typically don't accept write operations
+        return False
+
+class SmartThermostat(IoTDevice):
+    """Smart thermostat implementation"""
+    
+    def __init__(self, device_id: str, name: str):
+        super().__init__(device_id, name, DeviceType.SMART_DEVICE)
+        self.target_temperature = 22.0
+        self.current_temperature = 20.0
+        self.mode = "auto"  # auto, heat, cool, off
+        self.is_heating = False
+        self.is_cooling = False
+
+    def read_data(self) -> Dict[str, Any]:
+        data = {
+            'target_temperature': self.target_temperature,
+            'current_temperature': self.current_temperature,
+            'mode': self.mode,
+            'is_heating': self.is_heating,
+            'is_cooling': self.is_cooling
+        }
+        self.update_properties(data)
+        return data
+
+    def write_data(self, data: Dict[str, Any]) -> bool:
+        try:
+            if 'target_temperature' in data:
+                self.target_temperature = float(data['target_temperature'])
+            if 'mode' in data:
+                self.mode = data['mode']
+            
+            # Update heating/cooling status based on target vs current temperature
+            if self.mode == "auto":
+                if self.current_temperature < self.target_temperature - 1:
+                    self.is_heating = True
+                    self.is_cooling = False
+                elif self.current_temperature > self.target_temperature + 1:
+                    self.is_heating = False
+                    self.is_cooling = True
+                else:
+                    self.is_heating = False
+                    self.is_cooling = False
+            
+            self.read_data()  # Update properties
+            return True
+        except Exception as e:
+            logger.error(f"Error writing to thermostat {self.device_id}: {e}")
+            return False
+
+    def set_temperature(self, temperature: float):
+        """Convenience method to set target temperature"""
+        return self.write_data({'target_temperature': temperature})
+
+    def set_mode(self, mode: str):
+        """Convenience method to set thermostat mode"""
+        return self.write_data({'mode': mode})
+
+class SmartLight(IoTDevice):
+    """Smart light implementation"""
+    
+    def __init__(self, device_id: str, name: str):
+        super().__init__(device_id, name, DeviceType.ACTUATOR)
+        self.is_on = False
+        self.brightness = 100
+        self.color = {"r": 255, "g": 255, "b": 255}
+
+    def read_data(self) -> Dict[str, Any]:
+        data = {
+            'is_on': self.is_on,
+            'brightness': self.brightness,
+            'color': self.color
+        }
+        self.update_properties(data)
+        return data
+
+    def write_data(self, data: Dict[str, Any]) -> bool:
+        try:
+            if 'is_on' in data:
+                self.is_on = bool(data['is_on'])
+            if 'brightness' in data:
+                self.brightness = max(0, min(100, int(data['brightness'])))
+            if 'color' in data:
+                self.color.update(data['color'])
+            
+            self.read_data()  # Update properties
+            return True
+        except Exception as e:
+            logger.error(f"Error writing to light {self.device_id}: {e}")
+            return False
+
+    def turn_on(self):
+        """Turn on the light"""
+        return self.write_data({'is_on': True})
+
+    def turn_off(self):
+        """Turn off the light"""
+        return self.write_data({'is_on': False})
+
+    def set_brightness(self, brightness: int):
+        """Set light brightness (0-100)"""
+        return self.write_data({'brightness': brightness})
+
+    def set_color(self, r: int, g: int, b: int):
+        """Set light color (RGB values 0-255)"""
+        return self.write_data({'color': {'r': r, 'g': g, 'b': b}})
+
+class DataStorage:
+    """SQLite-based data storage for IoT data and rules"""
+    
+    def __init__(self, db_path: str = "iot_system.db"):
+        self.db_path = db_path
+        self.init_database()
+
+    def init_database(self):
+        """Initialize the database tables"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Device data table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS device_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                data TEXT NOT NULL
+            )
+        ''')
+        
+        # Automation rules table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS automation_rules (
+                rule_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                condition_device_id TEXT NOT NULL,
+                condition_property TEXT NOT NULL,
+                condition_type TEXT NOT NULL,
+                condition_value TEXT NOT NULL,
+                action_device_id TEXT NOT NULL,
+                action_method TEXT NOT NULL,
+                action_params TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+
+    def store_device_data(self, device_data: DeviceData):
+        """Store device data"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO device_data (device_id, timestamp, data)
+            VALUES (?, ?, ?)
+        ''', (device_data.device_id, device_data.timestamp.isoformat(), json.dumps(device_data.data)))
+        
+        conn.commit()
+        conn.close()
+
+    def get_device_data(self, device_id: str, hours: int = 24) -> List[DeviceData]:
+        """Get device data for the last N hours"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        since = datetime.now() - timedelta(hours=hours)
+        cursor.execute('''
+            SELECT device_id, timestamp, data FROM device_data
+            WHERE device_id = ? AND timestamp > ?
+            ORDER BY timestamp DESC
+        ''', (device_id, since.isoformat()))
+        
+        results = []
+        for row in cursor.fetchall():
+            results.append(DeviceData(
+                device_id=row[0],
+                timestamp=datetime.fromisoformat(row[1]),
+                data=json.loads(row[2])
+            ))
+        
+        conn.close()
+        return results
+
+    def store_rule(self, rule: AutomationRule):
+        """Store automation rule"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT OR REPLACE INTO automation_rules 
+            (rule_id, name, condition_device_id, condition_property, condition_type,
+             condition_value, action_device_id, action_method, action_params, enabled, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            rule.rule_id, rule.name, rule.condition_device_id, rule.condition_property,
+            rule.condition_type.value, json.dumps(rule.condition_value),
+            rule.action_device_id, rule.action_method, json.dumps(rule.action_params),
+            int(rule.enabled), rule.created_at.isoformat()
+        ))
+        
+        conn.commit()
+        conn.close()
+
+    def get_rules(self) -> List[AutomationRule]:
+        """Get all automation rules"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT * FROM automation_rules')
+        
+        rules = []
+        for row in cursor.fetchall():
+            rules.append(AutomationRule(
+                rule_id=row[0],
+                name=row[1],
+                condition_device_id=row[2],
+                condition_property=row[3],
+                condition_type=RuleCondition(row[4]),
+                condition_value=json.loads(row[5]),
+                action_device_id=row[6],
+                action_method=row[7],
+                action_params=json.loads(row[8]),
+                enabled=bool(row[9]),
+                created_at=datetime.fromisoformat(row[10])
+            ))
+        
+        conn.close()
+        return rules
+
+    def delete_rule(self, rule_id: str):
+        """Delete automation rule"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM automation_rules WHERE rule_id = ?', (rule_id,))
+        conn.commit()
+        conn.close()
+
+class AutomationEngine:
+    """Automation engine for processing rules"""
+    
+    def __init__(self, iot_manager):
+        self.iot_manager = iot_manager
+        self.rules: List[AutomationRule] = []
+        self.running = False
+
+    def add_rule(self, rule: AutomationRule):
+        """Add automation rule"""
+        self.rules.append(rule)
+        self.iot_manager.storage.store_rule(rule)
+        logger.info(f"Added automation rule: {rule.name}")
+
+    def remove_rule(self, rule_id: str):
+        """Remove automation rule"""
+        self.rules = [r for r in self.rules if r.rule_id != rule_id]
+        self.iot_manager.storage.delete_rule(rule_id)
+        logger.info(f"Removed automation rule: {rule_id}")
+
+    def load_rules(self):
+        """Load rules from storage"""
+        self.rules = self.iot_manager.storage.get_rules()
+        logger.info(f"Loaded {len(self.rules)} automation rules")
+
+    def evaluate_condition(self, rule: AutomationRule, device_properties: Dict[str, Any]) -> bool:
+        """Evaluate rule condition"""
+        if rule.condition_property not in device_properties:
+            return False
+
+        current_value = device_properties[rule.condition_property]
+        condition_value = rule.condition_value
+
+        try:
+            if rule.condition_type == RuleCondition.EQUALS:
+                return current_value == condition_value
+            elif rule.condition_type == RuleCondition.GREATER_THAN:
+                return float(current_value) > float(condition_value)
+            elif rule.condition_type == RuleCondition.LESS_THAN:
+                return float(current_value) < float(condition_value)
+            elif rule.condition_type == RuleCondition.BETWEEN:
+                return condition_value[0] <= float(current_value) <= condition_value[1]
+            # CHANGED condition would need historical data comparison
+            return False
+        except (ValueError, TypeError, KeyError):
+            return False
+
+    def execute_action(self, rule: AutomationRule):
+        """Execute rule action"""
+        target_device = self.iot_manager.get_device(rule.action_device_id)
+        if not target_device:
+            logger.error(f"Target device {rule.action_device_id} not found for rule {rule.name}")
+            return False
+
+        try:
+            if hasattr(target_device, rule.action_method):
+                method = getattr(target_device, rule.action_method)
+                if rule.action_params:
+                    result = method(**rule.action_params)
+                else:
+                    result = method()
+                logger.info(f"Executed action {rule.action_method} on device {rule.action_device_id}")
+                return result
+            else:
+                logger.error(f"Method {rule.action_method} not found on device {rule.action_device_id}")
+                return False
+        except Exception as e:
+            logger.error(f"Error executing action for rule {rule.name}: {e}")
+            return False
+
+    def process_device_update(self, device_id: str, old_properties: Dict[str, Any], new_properties: Dict[str, Any]):
+        """Process device update and check rules"""
+        for rule in self.rules:
+            if not rule.enabled or rule.condition_device_id != device_id:
+                continue
+
+            if self.evaluate_condition(rule, new_properties):
+                logger.info(f"Rule condition met: {rule.name}")
+                self.execute_action(rule)
+
+class IoTManager:
+    """Main IoT device management system"""
+    
+    def __init__(self, db_path: str = "iot_system.db"):
+        self.devices: Dict[str, IoTDevice] = {}
+        self.storage = DataStorage(db_path)
+        self.automation_engine = AutomationEngine(self)
+        self.monitoring_thread = None
+        self.running = False
+        
+        # Load existing rules
+        self.automation_engine.load_rules()
+
+    def add_device(self, device: IoTDevice) -> bool:
+        """Add a device to the system"""
+        try:
+            device.add_callback(self.automation_engine.process_device_update)
+            self.devices[device.device_id] = device
+            device.connect()
+            logger.info(f"Added device: {device.name} ({device.device_id})")
+            return True
+        except Exception as e:
+            logger.error(f"Error adding device {device.device_id}: {e}")
+            return False
+
+    def remove_device(self, device_id: str) -> bool:
+        """Remove a device from the system"""
+        if device_id in self.devices:
+            device = self.devices[device_id]
+            device.disconnect()
+            del self.devices[device_id]
+            logger.info(f"Removed device: {device.name} ({device_id})")
+            return True
+        return False
+
+    def get_device(self, device_id: str) -> Optional[IoTDevice]:
+        """Get a device by ID"""
+        return self.devices.get(device_id)
+
+    def get_all_devices(self) -> Dict[str, IoTDevice]:
+        """Get all devices"""
+        return self.devices.copy()
+
+    def get_device_status(self, device_id: str) -> Optional[Dict[str, Any]]:
+        """Get device status and properties"""
+        device = self.get_device(device_id)
+        return device.get_info() if device else None
+
+    def control_device(self, device_id: str, action: str, params: Dict[str, Any] = None) -> bool:
+        """Control a device"""
+        device = self.get_device(device_id)
+        if not device:
+            logger.error(f"Device {device_id} not found")
+            return False
+
+        try:
+            if hasattr(device, action):
+                method = getattr(device, action)
+                if params:
+                    result = method(**params)
+                else:
+                    result = method()
+                logger.info(f"Executed {action} on device {device_id}")
+                return result
+            else:
+                logger.error(f"Action {action} not available on device {device_id}")
+                return False
+        except Exception as e:
+            logger.error(f"Error controlling device {device_id}: {e}")
+            return False
+
+    def create_automation_rule(self, name: str, condition_device_id: str, condition_property: str,
+                             condition_type: RuleCondition, condition_value: Any,
+                             action_device_id: str, action_method: str,
+                             action_params: Dict[str, Any] = None) -> str:
+        """Create an automation rule"""
+        rule_id = str(uuid.uuid4())
+        rule = AutomationRule(
+            rule_id=rule_id,
+            name=name,
+            condition_device_id=condition_device_id,
+            condition_property=condition_property,
+            condition_type=condition_type,
+            condition_value=condition_value,
+            action_device_id=action_device_id,
+            action_method=action_method,
+            action_params=action_params or {}
+        )
+        
+        self.automation_engine.add_rule(rule)
+        return rule_id
+
+    def start_monitoring(self, interval: int = 30):
+        """Start device monitoring"""
+        if self.running:
+            return
+
+        self.running = True
+        self.monitoring_thread = threading.Thread(target=self._monitoring_loop, args=(interval,))
+        self.monitoring_thread.daemon = True
+        self.monitoring_thread.start()
+        logger.info("Started device monitoring")
+
+    def stop_monitoring(self):
+        """Stop device monitoring"""
+        self.running = False
+        if self.monitoring_thread:
+            self.monitoring_thread.join()
+        logger.info("Stopped device monitoring")
+
+    def _monitoring_loop(self, interval: int):
+        """Main monitoring loop"""
+        while self.running:
+            try:
+                for device in self.devices.values():
+                    if device.status == DeviceStatus.ONLINE:
+                        try:
+                            data = device.read_data()
+                            device_data = DeviceData(
+                                device_id=device.device_id,
+                                timestamp=datetime.now(),
+                                data=data
+                            )
+                            self.storage.store_device_data(device_data)
+                        except Exception as e:
+                            logger.error(f"Error reading from device {device.device_id}: {e}")
+                            device.status = DeviceStatus.ERROR
+                
+                time.sleep(interval)
+            except Exception as e:
+                logger.error(f"Error in monitoring loop: {e}")
+                time.sleep(interval)
+
+    def get_device_history(self, device_id: str, hours: int = 24) -> List[DeviceData]:
+        """Get device data history"""
+        return self.storage.get_device_data(device_id, hours)
+
+    def get_system_status(self) -> Dict[str, Any]:
+        """Get overall system status"""
+        total_devices = len(self.devices)
+        online_devices = sum(1 for d in self.devices.values() if d.status == DeviceStatus.ONLINE)
+        offline_devices = sum(1 for d in self.devices.values() if d.status == DeviceStatus.OFFLINE)
+        error_devices = sum(1 for d in self.devices.values() if d.status == DeviceStatus.ERROR)
+        
+        return {
+            'total_devices': total_devices,
+            'online_devices': online_devices,
+            'offline_devices': offline_devices,
+            'error_devices': error_devices,
+            'automation_rules': len(self.automation_engine.rules),
+            'monitoring_active': self.running
+        }
+
+# Example usage and demonstration
+def main():
+    """Demonstrate the IoT management system"""
+    
+    # Create IoT manager
+    iot_manager = IoTManager()
+    
+    # Create and add devices
+    temp_sensor = TemperatureSensor("temp_001", "Living Room Temperature Sensor")
+    thermostat = SmartThermostat("thermo_001", "Living Room Thermostat")
+    smart_light = SmartLight("light_001", "Living Room Light")
+    
+    iot_manager.add_device(temp_sensor)
+    iot_manager.add_device(thermostat)
+    iot_manager.add_device(smart_light)
+    
+    # Create automation rules
+    # Rule 1: If temperature > 25°C, turn on cooling
+    rule1_id = iot_manager.create_automation_rule(
+        name="Auto Cooling",
+        condition_device_id="temp_001",
+        condition_property="temperature",
+        condition_type=RuleCondition.GREATER_THAN,
+        condition_value=25.0,
+        action_device_id="thermo_001",
+        action_method="write_data",
+        action_params={"mode": "cool"}
+    )
+    
+    # Rule 2: If temperature < 18°C, turn on heating
+    rule2_id = iot_manager.create_automation_rule(
+        name="Auto Heating",
+        condition_device_id="temp_001",
+        condition_property="temperature",
+        condition_type=RuleCondition.LESS_THAN,
+        condition_value=18.0,
+        action_device_id="thermo_001",
+        action_method="write_data",
+        action_params={"mode": "heat"}
+    )
+    
+    # Rule 3: If humidity > 70%, turn on light (as a dehumidifier indicator)
+    rule3_id = iot_manager.create_automation_rule(
+        name="High Humidity Alert",
+        condition_device_id="temp_001",
+        condition_property="humidity",
+        condition_type=RuleCondition.GREATER_THAN,
+        condition_value=70.0,
+        action_device_id="light_001",
+        action_method="turn_on"
+    )
+    
+    # Start monitoring
+    iot_manager.start_monitoring(interval=5)  # Check every 5 seconds for demo
+    
+    print("IoT Management System Started!")
+    print("=" * 50)
+    
+    try:
+        # Simulate system operation
+        for i in range(20):  # Run for about 100 seconds
+            time.sleep(5)
+            
+            # Print system status
+            status = iot_manager.get_system_status()
+            print(f"\nSystem Status (Iteration {i+1}):")
+            print(f"Online Devices: {status['online_devices']}/{status['total_devices']}")
+            print(f"Active Rules: {status['automation_rules']}")
+            
+            # Print device statuses
+            for device_id, device in iot_manager.get_all_devices().items():
+                info = device.get_info()
+                print(f"{info['name']}: {info['properties']}")
+            
+            # Manually control some devices occasionally
+            if i == 5:
+                print("\n>>> Manual Control: Setting thermostat to 24°C")
+                iot_manager.control_device("thermo_001", "set_temperature", {"temperature": 24.0})
+            
+            if i == 10:
+                print("\n>>> Manual Control: Turning on smart light")
+                iot_manager.control_device("light_001", "turn_on")
+            
+            if i == 15:
+                print("\n>>> Manual Control: Setting light color to blue")
+                iot_manager.control_device("light_001", "set_color", {"r": 0, "g": 0, "b": 255})
+            
+            # Simulate temperature changes to trigger automation
+            if i == 8:
+                temp_sensor.temperature = 26.5  # Should trigger cooling
+            elif i == 12:
+                temp_sensor.temperature = 17.0  # Should trigger heating
+            elif i == 16:
+                temp_sensor.humidity = 75.0  # Should trigger humidity alert
+    
+    except KeyboardInterrupt:
+        print("\nShutting down system...")
+    
+    finally:
+        # Stop monitoring and cleanup
+        iot_manager.stop_monitoring()
+        
+        # Show some historical data
+        print("\n" + "=" * 50)
+        print("Historical Data Sample:")
+        history = iot_manager.get_device_history("temp_001", hours=1)
+        for record in history[-5:]:  # Show last 5 records
+            print(f"{record.timestamp}: {record.data}")
+        
+        print("\nIoT Management System Stopped!")
+
+if __name__ == "__main__":
+    main()
