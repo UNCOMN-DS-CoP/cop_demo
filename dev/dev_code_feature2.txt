@@ -1,0 +1,361 @@
+import random
+import os
+import sys
+
+class TicTacToe:
+    def __init__(self):
+        self.board = [' ' for _ in range(9)]  # 3x3 board represented as a list
+        self.current_player = 'X'
+        self.game_mode = None  # Will be set to 'pvp' or 'pvc'
+        self.computer_symbol = 'O'
+        self.human_symbol = 'X'
+        
+    def clear_screen(self):
+        """Clear the console screen"""
+        os.system('cls' if os.name == 'nt' else 'clear')
+    
+    def display_board(self):
+        """Display the current state of the board"""
+        print("\n   |   |   ")
+        print(f" {self.board[0]} | {self.board[1]} | {self.board[2]} ")
+        print("___|___|___")
+        print("   |   |   ")
+        print(f" {self.board[3]} | {self.board[4]} | {self.board[5]} ")
+        print("___|___|___")
+        print("   |   |   ")
+        print(f" {self.board[6]} | {self.board[7]} | {self.board[8]} ")
+        print("   |   |   \n")
+    
+    def display_positions(self):
+        """Display the board with position numbers for reference"""
+        print("\nPosition numbers:")
+        print("   |   |   ")
+        print(" 1 | 2 | 3 ")
+        print("___|___|___")
+        print("   |   |   ")
+        print(" 4 | 5 | 6 ")
+        print("___|___|___")
+        print("   |   |   ")
+        print(" 7 | 8 | 9 ")
+        print("   |   |   \n")
+    
+    def is_valid_move(self, position):
+        """Check if the move is valid"""
+        return 1 <= position <= 9 and self.board[position - 1] == ' '
+    
+    def make_move(self, position, symbol):
+        """Make a move on the board"""
+        if self.is_valid_move(position):
+            self.board[position - 1] = symbol
+            return True
+        return False
+    
+    def check_winner(self):
+        """Check if there's a winner"""
+        # Define winning combinations
+        winning_combinations = [
+            [0, 1, 2], [3, 4, 5], [6, 7, 8],  # Rows
+            [0, 3, 6], [1, 4, 7], [2, 5, 8],  # Columns
+            [0, 4, 8], [2, 4, 6]              # Diagonals
+        ]
+        
+        for combo in winning_combinations:
+            if (self.board[combo[0]] == self.board[combo[1]] == self.board[combo[2]] != ' '):
+                return self.board[combo[0]]
+        return None
+    
+    def is_board_full(self):
+        """Check if the board is full"""
+        return ' ' not in self.board
+    
+    def is_game_over(self):
+        """Check if the game is over"""
+        return self.check_winner() is not None or self.is_board_full()
+    
+    def get_available_moves(self):
+        """Get list of available moves"""
+        return [i + 1 for i in range(9) if self.board[i] == ' ']
+    
+    def minimax(self, depth, is_maximizing, alpha=-float('inf'), beta=float('inf')):
+        """
+        Minimax algorithm with alpha-beta pruning for AI decision making
+        """
+        winner = self.check_winner()
+        
+        # Terminal cases
+        if winner == self.computer_symbol:
+            return 10 - depth
+        elif winner == self.human_symbol:
+            return depth - 10
+        elif self.is_board_full():
+            return 0
+        
+        if is_maximizing:
+            max_eval = -float('inf')
+            for move in self.get_available_moves():
+                self.board[move - 1] = self.computer_symbol
+                eval_score = self.minimax(depth + 1, False, alpha, beta)
+                self.board[move - 1] = ' '
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in self.get_available_moves():
+                self.board[move - 1] = self.human_symbol
+                eval_score = self.minimax(depth + 1, True, alpha, beta)
+                self.board[move - 1] = ' '
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    def get_best_move(self, difficulty='hard'):
+        """
+        Get the best move for the computer based on difficulty level
+        """
+        available_moves = self.get_available_moves()
+        
+        if difficulty == 'easy':
+            # Easy: Random move with occasional good moves
+            if random.random() < 0.3:  # 30% chance of making a good move
+                return self.get_strategic_move()
+            else:
+                return random.choice(available_moves)
+        
+        elif difficulty == 'medium':
+            # Medium: Mix of strategic and random moves
+            if random.random() < 0.7:  # 70% chance of making a good move
+                return self.get_strategic_move()
+            else:
+                return random.choice(available_moves)
+        
+        else:  # hard
+            # Hard: Always use minimax for optimal play
+            best_move = None
+            best_value = -float('inf')
+            
+            for move in available_moves:
+                self.board[move - 1] = self.computer_symbol
+                move_value = self.minimax(0, False)
+                self.board[move - 1] = ' '
+                
+                if move_value > best_value:
+                    best_value = move_value
+                    best_move = move
+            
+            return best_move
+    
+    def get_strategic_move(self):
+        """Get a strategic move (win, block, or center/corner)"""
+        available_moves = self.get_available_moves()
+        
+        # Try to win
+        for move in available_moves:
+            self.board[move - 1] = self.computer_symbol
+            if self.check_winner() == self.computer_symbol:
+                self.board[move - 1] = ' '
+                return move
+            self.board[move - 1] = ' '
+        
+        # Try to block human from winning
+        for move in available_moves:
+            self.board[move - 1] = self.human_symbol
+            if self.check_winner() == self.human_symbol:
+                self.board[move - 1] = ' '
+                return move
+            self.board[move - 1] = ' '
+        
+        # Take center if available
+        if 5 in available_moves:
+            return 5
+        
+        # Take corners
+        corners = [1, 3, 7, 9]
+        available_corners = [move for move in corners if move in available_moves]
+        if available_corners:
+            return random.choice(available_corners)
+        
+        # Take any available move
+        return random.choice(available_moves)
+    
+    def get_player_move(self):
+        """Get move from human player"""
+        while True:
+            try:
+                move = input(f"Player {self.current_player}, enter your move (1-9): ")
+                move = int(move)
+                
+                if self.is_valid_move(move):
+                    return move
+                else:
+                    print("Invalid move! Position already taken or out of range.")
+            except ValueError:
+                print("Please enter a valid number between 1 and 9.")
+            except KeyboardInterrupt:
+                print("\nGame interrupted by user.")
+                sys.exit()
+    
+    def switch_player(self):
+        """Switch the current player"""
+        self.current_player = 'O' if self.current_player == 'X' else 'X'
+    
+    def reset_game(self):
+        """Reset the game to initial state"""
+        self.board = [' ' for _ in range(9)]
+        self.current_player = 'X'
+    
+    def display_game_result(self, winner):
+        """Display the game result"""
+        self.display_board()
+        if winner:
+            if self.game_mode == 'pvc' and winner == self.computer_symbol:
+                print("🤖 Computer wins! Better luck next time!")
+            elif self.game_mode == 'pvc' and winner == self.human_symbol:
+                print("🎉 Congratulations! You beat the computer!")
+            else:
+                print(f"🎉 Player {winner} wins!")
+        else:
+            print("🤝 It's a tie!")
+    
+    def play_two_player(self):
+        """Play the game in two-player mode"""
+        self.game_mode = 'pvp'
+        print("\n🎮 Two Player Mode")
+        print("Player X goes first!")
+        self.display_positions()
+        
+        while not self.is_game_over():
+            self.display_board()
+            move = self.get_player_move()
+            self.make_move(move, self.current_player)
+            
+            if not self.is_game_over():
+                self.switch_player()
+        
+        winner = self.check_winner()
+        self.display_game_result(winner)
+    
+    def play_vs_computer(self, difficulty='hard'):
+        """Play the game against computer"""
+        self.game_mode = 'pvc'
+        print(f"\n🤖 Player vs Computer Mode (Difficulty: {difficulty.title()})")
+        print("You are X, Computer is O")
+        print("You go first!")
+        self.display_positions()
+        
+        while not self.is_game_over():
+            self.display_board()
+            
+            if self.current_player == self.human_symbol:
+                # Human player's turn
+                move = self.get_player_move()
+                self.make_move(move, self.current_player)
+            else:
+                # Computer's turn
+                print("Computer is thinking...")
+                move = self.get_best_move(difficulty)
+                self.make_move(move, self.current_player)
+                print(f"Computer chooses position {move}")
+            
+            if not self.is_game_over():
+                self.switch_player()
+        
+        winner = self.check_winner()
+        self.display_game_result(winner)
+    
+    def show_menu(self):
+        """Display the main menu"""
+        print("\n" + "="*40)
+        print("🎯 WELCOME TO TIC-TAC-TOE!")
+        print("="*40)
+        print("1. Two Players")
+        print("2. Player vs Computer (Easy)")
+        print("3. Player vs Computer (Medium)")
+        print("4. Player vs Computer (Hard)")
+        print("5. How to Play")
+        print("6. Exit")
+        print("="*40)
+    
+    def show_instructions(self):
+        """Show game instructions"""
+        print("\n" + "="*40)
+        print("📋 HOW TO PLAY TIC-TAC-TOE")
+        print("="*40)
+        print("• The game is played on a 3x3 grid")
+        print("• Players take turns placing X's and O's")
+        print("• First player to get 3 in a row wins!")
+        print("• 3 in a row can be horizontal, vertical, or diagonal")
+        print("• If all 9 squares are filled and no one has 3 in a row, it's a tie")
+        print("\n🎮 CONTROLS:")
+        print("• Enter numbers 1-9 to place your symbol")
+        print("• Numbers correspond to positions on the grid:")
+        self.display_positions()
+        input("Press Enter to continue...")
+    
+    def run(self):
+        """Main game loop"""
+        while True:
+            self.clear_screen()
+            self.show_menu()
+            
+            try:
+                choice = input("Choose an option (1-6): ").strip()
+                
+                if choice == '1':
+                    self.reset_game()
+                    self.play_two_player()
+                
+                elif choice == '2':
+                    self.reset_game()
+                    self.play_vs_computer('easy')
+                
+                elif choice == '3':
+                    self.reset_game()
+                    self.play_vs_computer('medium')
+                
+                elif choice == '4':
+                    self.reset_game()
+                    self.play_vs_computer('hard')
+                
+                elif choice == '5':
+                    self.show_instructions()
+                    continue
+                
+                elif choice == '6':
+                    print("\n👋 Thanks for playing! Goodbye!")
+                    break
+                
+                else:
+                    print("❌ Invalid choice! Please select 1-6.")
+                    input("Press Enter to continue...")
+                    continue
+                
+                # Ask if player wants to play again
+                while True:
+                    play_again = input("\n🔄 Play again? (y/n): ").lower().strip()
+                    if play_again in ['y', 'yes']:
+                        break
+                    elif play_again in ['n', 'no']:
+                        print("\n👋 Thanks for playing! Goodbye!")
+                        return
+                    else:
+                        print("Please enter 'y' for yes or 'n' for no.")
+            
+            except KeyboardInterrupt:
+                print("\n\n👋 Game interrupted. Goodbye!")
+                break
+            except Exception as e:
+                print(f"\n❌ An error occurred: {e}")
+                input("Press Enter to continue...")
+
+def main():
+    """Main function to start the game"""
+    game = TicTacToe()
+    game.run()
+
+if __name__ == "__main__":
+    main()
