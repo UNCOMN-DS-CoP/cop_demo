@@ -76,7 +76,7 @@ If you have a suggestion that would make this better, please fork the repo and c
 ### Top contributors:
 Scott Rappold - Repo Setup and Permissions  
 Mitchell Herbert - README.md, Demo Files  
-Your Name Here - 'Contribution'  
+Carlos Santana - File cleanup and organization  
 
 <!-- LICENSE -->
 ## License
